@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Serilog;
 using ServiceStack.Text;
@@ -16,7 +17,7 @@ namespace Lumberjack
             ConfigHelper.ReadConfig();
             Log.Logger = new LoggerConfiguration()
                 .MinimumLevel.Verbose()
-                .WriteTo.RollingFile(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                .WriteTo.RollingFile(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),"Lumberjack",
                     "{Date}-lumberjack.log"))
                 .WriteTo.ColoredConsole()
                 .CreateLogger();
@@ -46,6 +47,24 @@ namespace Lumberjack
                 Config.TimeField = json.Get("time_field");
                 Config.ProcessedDirectory = json.Get("processed_directory");
 
+                if (!Directory.Exists(Config.ProcessedDirectory))
+                {
+                    Log.Debug("Processed directory does not exist, attempt to create");
+                    try
+                    {
+                        Directory.CreateDirectory(Config.ProcessedDirectory);
+                    }
+                    catch (Exception x)
+                    {
+                        Log.Error(x, "Failed creating processed directory");
+                        Thread.Sleep(5000); 
+                        Environment.Exit(-1);
+                    }
+                }
+                else
+                {
+                    Log.Verbose("Processed directory exists at {Directory}", Config.ProcessedDirectory);
+                }
                 Log.Information("Config file loaded");
             }
             else

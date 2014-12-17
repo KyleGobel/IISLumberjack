@@ -37,7 +37,10 @@ namespace Lumberjack
                 .GetFiles(_location, "*.log")
                 .Select(x => new FileInfo(x))
                 .OrderBy(x => x.CreationTimeUtc);
-
+            if (!files.Any())
+            {
+                Log.Information("No *.log files found to process");
+            }
             Parallel.ForEach(files, file =>
             {
                 var originalFileInfo = new FileInfo(file.FullName);
@@ -120,7 +123,7 @@ namespace Lumberjack
                     }
 
                 }
-                Log.Verbose("Finished processing file {@File}", file);
+                Log.Verbose("Finished processing file {@File}", file.Name);
 
                 var newLocation = Path.Combine(Config.ProcessedDirectory, Path.GetFileName(originalFileInfo.Name));
                 File.Move(file.FullName, newLocation);

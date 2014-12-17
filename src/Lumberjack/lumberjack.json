@@ -5,7 +5,7 @@
     "remember_position": true,
     "index_format": "logstash-{date}",
     "elasticsearch_url": "http://<elasticsearchurl>",
-    "processed_directory": "/processed",
+    "processed_directory": "lumberjack_processed",
     "enrich_with": {
         "app_name": "test logs",
         "machine_name": "dev box",
