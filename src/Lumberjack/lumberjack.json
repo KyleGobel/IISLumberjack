@@ -1,0 +1,13 @@
+﻿{
+    "date_field": "date",
+    "time_field": "time",
+    "date_format": "yyyy-MM-dd",
+    "remember_position": true,
+    "index_format": "logstash-{date}",
+    "elasticsearch_url": "http://<elasticsearchurl>",
+    "enrich_with": {
+        "app_name": "test logs",
+        "machine_name": "dev box",
+        "type":  "iis_logs"
+    }	
+}

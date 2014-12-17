@@ -1,0 +1,231 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using Serilog;
+using ServiceStack;
+using ServiceStack.Text;
+
+namespace Lumberjack
+{
+    class Program
+    {
+        static void Main(string[] args)
+        {
+            ConfigHelper.ReadConfig();
+            Log.Logger = new LoggerConfiguration()
+                .MinimumLevel.Verbose()
+                .WriteTo.RollingFile(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "{Date}-lumberjack.log"))
+                .WriteTo.ColoredConsole()
+                .CreateLogger();
+
+            Log.Verbose("Starting lumberjack");
+            var app = new Lumberjack();
+            app.Process();
+        }
+    }
+
+    public class ConfigHelper
+    {
+        private const string ConfigFile = "lumberjack.json";
+        public static void ReadConfig()
+        {
+            if (File.Exists(ConfigFile))
+            {
+                var str = File.ReadAllText(ConfigFile);
+                var json = JsonObject.Parse(str);
+
+                Config.DateField = json.Get("date_field");
+                Config.DateFormat = json.Get("date_format");
+                Config.ElasticSearchUrl = json.Get("elasticsearch_url");
+                Config.EnrichWith = json.Get<Dictionary<string, string>>("enrich_with");
+                Config.IndexFormat = json.Get("index_format");
+                Config.TimeField = json.Get("time_field");
+
+                Log.Information("Config file loaded");
+            }
+            else
+            {
+                Log.Fatal("No config file found at {ConfigFilePath}", ConfigFile);
+                Environment.Exit(-1);
+            }
+        }
+    }
+
+    public class Lumberjack
+    {
+        private readonly string _location ;
+        private FileInfo _lastFile;
+        private int _lastLine;
+        private string createIndexUrlFmt;
+        public Lumberjack()
+        {
+            JsConfig.AlwaysUseUtc = true;
+            JsConfig.AssumeUtc = true;
+            JsConfig.DateHandler = DateHandler.ISO8601;
+            var directoryInfo = new FileInfo(Assembly.GetCallingAssembly().Location).Directory;
+            if (directoryInfo != null)
+            {
+                _location = directoryInfo.FullName;
+            }
+            createIndexUrlFmt = Config.ElasticSearchUrl + ":9200/{_index}/{_type}/_bulk";
+        }
+
+        public void Process()
+        {
+            var files = Directory
+                .GetFiles(_location, "*.log")
+                .Select(x => new FileInfo(x))
+                .OrderBy(x => x.CreationTimeUtc);
+
+            foreach (var file in files)
+            {
+                var docs = ProcessFile(file);
+                Log.Verbose("Grouping data by date");
+                var indicies = docs.GroupBy(x => x.Item1.Date)
+                    .Select(g => Tuple.Create(g.Key, g.Select(x => x.Item2).ToList()));
+
+                foreach (var index in indicies)
+                {
+                    var bulk = "";
+                    var esIndex = Config.IndexFormat.Replace("{date}", index.Item1.ToString("yyyy.MM.dd"));
+                    Log.Verbose("Using ElasticSearch index {Index}", esIndex);
+                    int count = 0;
+                    foreach (var doc in index.Item2)
+                    {
+                        var jsDoc = doc.ToJson();
+                        bulk += "{ \"index\" : { \"_index\" : \"" + esIndex + "\", \"_type\" : \"iis\" } }\n";
+                        bulk += jsDoc + "\n";
+                        count++;
+                        if (count >= 1000)
+                        {
+                            var respo = createIndexUrlFmt
+                                .Replace("{_index}", esIndex)
+                                .Replace("{_type}", "iis")
+                                .PostJsonToUrl(bulk);
+                            Log.Verbose("Response {Response}", respo);
+                            count = 0;
+                            bulk = "";
+                        }
+                    }
+                    if (!String.IsNullOrEmpty(bulk))
+                    {
+                        var resp = createIndexUrlFmt
+                            .Replace("{_index}", esIndex)
+                            .Replace("{_type}", "iis")
+                            .PostJsonToUrl(bulk);
+                        Log.Verbose("Response {Response}", resp);
+                    }
+
+                }
+                Log.Verbose("Finished processing file {@File}", file);
+                File.Delete(file.FullName);
+                Log.Verbose("Deleted file {FileName}", file.FullName);
+                Thread.Sleep(5000);
+            }
+        }
+
+        public List<Tuple<DateTime, Dictionary<string,string>>> ProcessFile(FileInfo file)
+        {
+            if (File.Exists(file.FullName))
+            {
+                Log.Verbose("Locking file {FileName}", file.Name);
+                File.Move(file.FullName, file.FullName + ".lock");
+                file = new FileInfo(file.FullName + ".lock");
+            }
+
+            Log.Verbose("Processing file {FileName}", file.FullName);
+            _lastFile = file;
+
+            var data = new List<Tuple<DateTime, Dictionary<string, string>>>();
+            var jsonDocs = new List<string>();
+            using (var stream = new StreamReader(file.FullName))
+            {
+                _lastLine = 0;
+                var line = default(string);
+                var fields = default(string[]);
+                while ((line = stream.ReadLine()) != null)
+                {
+                    if (line.StartsWith("#Fields:"))
+                    {
+                          fields = line.Substring("#Fields: ".Length)
+                            .Split(new[] {" "}, StringSplitOptions.None);
+
+                        _lastLine++;
+                        continue;
+                    }
+
+                    if (fields == default(string[]) || line.StartsWith("#"))
+                    {
+                        _lastLine++;
+                        continue;
+                    }
+
+                    var values = line.Split(new[] {" "}, StringSplitOptions.None);
+
+                    if (values.Length != fields.Length)
+                    {
+                        _lastLine++;
+                        continue;
+                    }
+
+                    var dictionary = fields
+                        .Zip(values, Tuple.Create)
+                        .ToDictionary(x => x.Item1, x => x.Item2);
+
+                    var ts = HandleTimstamp(ref dictionary);
+                    HandleEnrich(ref dictionary);
+
+                    data.Add(Tuple.Create(ts,dictionary));
+
+                    _lastLine ++;
+                }
+            }
+           Log.Verbose("File read complete with {Rows}", data.Count);
+           return data;
+        }
+
+        public static void HandleEnrich(ref Dictionary<string, string> dictionary)
+        {
+            if (Config.EnrichWith != null && Config.EnrichWith.Any())
+            {
+                dictionary = dictionary
+                    .Concat(Config.EnrichWith)
+                    .ToDictionary(x => x.Key, x => x.Value);
+            }
+        }
+        private static DateTime HandleTimstamp(ref Dictionary<string, string> dictionary)
+        {
+            if (dictionary.ContainsKey(Config.DateField) && dictionary.ContainsKey(Config.TimeField))
+            {
+                var date = DateTime.ParseExact(dictionary[Config.DateField], Config.DateFormat,
+                    CultureInfo.InvariantCulture);
+                var time = TimeSpan.Parse(dictionary[Config.TimeField]);
+
+                dictionary.Remove(Config.DateField);
+                dictionary.Remove(Config.TimeField);
+                dictionary.Add("@timestamp", (date + time).ToString("O"));
+                return date + time;
+            }
+            throw new Exception("Couldn't parse timestamp");
+        }
+    }
+
+    public static class Config
+    {
+        public static Dictionary<string,string> EnrichWith { get; set; } 
+        public static string ElasticSearchUrl { get; set; }
+        public static string IndexFormat { get; set; }
+        public static string DateField { get; set; }
+        public static string TimeField { get; set; }
+        public static string DateFormat { get; set; }
+        public static string ProcessDirectory { get; set; }
+    }
+}
