@@ -68,6 +68,7 @@ namespace Lumberjack
                 //group by date
                 var indicies = data.GroupBy(x => x.Item1.Date)
                     .Select(g => Tuple.Create(g.Key, g.Select(x => x.Item2).ToList()));
+                    var error = false;
 
                 foreach (var index in indicies)
                 {
@@ -89,22 +90,20 @@ namespace Lumberjack
                             try
                             {
                                 var respo = createIndexUrlFmt
-                                .Replace("{_index}", esIndex)
-                                .Replace("{_type}", "iis")
-                                .PostJsonToUrl(bulk);
+                                    .Replace("{_index}", esIndex)
+                                    .Replace("{_type}", "iis")
+                                    .PostJsonToUrl(bulk);
                             }
                             catch (Exception x)
                             {
-                                Log.Error(x, "Error uploading file to elasticsearch"); 
+                                Log.Error(x, "Error uploading {File} : {Count} to elasticsearch", file.Name, count);
+                                error = true;
                             }
-                            
+
                             //read the response and see if anything failed eventually :(
                             Log.Verbose("{TotalItems} items processed", total);
                             count = 0;
                             bulk = "";
-
-                            //give the poor thread a break...not too long
-                            Thread.Sleep(10);
                         }
                     }
                     if (!String.IsNullOrEmpty(bulk))
@@ -119,7 +118,8 @@ namespace Lumberjack
                         }
                         catch (Exception x)
                         {
-                            Log.Error(x, "Error uploading file to elasticsearch");
+                            Log.Error(x, "Error uploading {File} : {Count} to elasticsearch", file.Name, count);
+                            error = true;
                         }
 
                         Log.Verbose("{TotalItems} items processed", total);
@@ -128,10 +128,11 @@ namespace Lumberjack
                 }
                 Log.Verbose("Finished processing file {@File}", file.Name);
 
-                var newLocation = Path.Combine(Config.ProcessedDirectory, Path.GetFileName(originalFileInfo.Name));
+                var newLocation = error
+                    ? Path.Combine(Config.ProcessedDirectory, Path.GetFileName(originalFileInfo.Name))
+                    : Path.Combine(Config.ProcessedDirectory, Path.GetFileName(originalFileInfo.Name + ".error"));
                 File.Move(file.FullName, newLocation);
                 Log.Verbose("Moved file to {FileName}", newLocation);
-                Thread.Sleep(10);
             });
         }
 
