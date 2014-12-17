@@ -102,6 +102,9 @@ namespace Lumberjack
                             Log.Verbose("{TotalItems} items processed", total);
                             count = 0;
                             bulk = "";
+
+                            //give the poor thread a break...not too long
+                            Thread.Sleep(10);
                         }
                     }
                     if (!String.IsNullOrEmpty(bulk))
@@ -128,6 +131,7 @@ namespace Lumberjack
                 var newLocation = Path.Combine(Config.ProcessedDirectory, Path.GetFileName(originalFileInfo.Name));
                 File.Move(file.FullName, newLocation);
                 Log.Verbose("Moved file to {FileName}", newLocation);
+                Thread.Sleep(10);
             });
         }
 
